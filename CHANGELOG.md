@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.97.1](https://github.com/kunchenguid/no-mistakes/compare/v1.97.0...v1.97.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **agent:** keep Claude's structured submission through a prose-only result ([#1458](https://github.com/kunchenguid/no-mistakes/issues/1458)) ([5c43190](https://github.com/kunchenguid/no-mistakes/commit/5c43190fdc659fa1e56354207cd8e6dcc2a78e1f))
+* **agent:** skip a retry that cannot finish inside the step deadline ([#1464](https://github.com/kunchenguid/no-mistakes/issues/1464)) ([d89a268](https://github.com/kunchenguid/no-mistakes/commit/d89a268252717da3b05691f30d68d11aaaf6f8c1))
+* **cli:** allow daemon lifecycle commands with an older daemon ([#1462](https://github.com/kunchenguid/no-mistakes/issues/1462)) ([108c881](https://github.com/kunchenguid/no-mistakes/commit/108c88116f5d975782ec6caed756c8f6cb114bdd))
+
 ## [1.97.0](https://github.com/kunchenguid/no-mistakes/compare/v1.96.0...v1.97.0) (2026-10-14)
 
 
