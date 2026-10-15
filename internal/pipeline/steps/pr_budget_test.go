@@ -179,12 +179,16 @@ func TestPRBudgetExistingOwnedBitbucketBodyIncludesAttestation(t *testing.T) {
 	if _, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview); err != nil {
 		t.Fatal(err)
 	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	content, _ := ownedFixture(t)
 	parts, err := parsePROwnedBody(content.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, sections, err := estimatePRBody(sctx, scm.ProviderBitbucket, &parts)
+	body, sections, err := estimatePRBody(sctx, scm.ProviderBitbucket, &parts, steps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +358,11 @@ func TestPRBudgetMinimalAppendixDoesNotCountExcludedEvidence(t *testing.T) {
 	insertCompletedStep(t, sctx, types.StepRebase, "", strings.Repeat("recorded evidence ", 5000))
 	sctx.Config.PR.Appendix = config.PRAppendixMinimal
 	fakeProviderPlugin(t, sctx, fakeplugin.State{MaxPRBodyChars: 100000})
-	body, _, err := estimatePRBody(sctx, scm.ProviderGitHub, nil)
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _, err := estimatePRBody(sctx, scm.ProviderGitHub, nil, steps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +380,11 @@ func TestPRBudgetCountsTrustedTemplateAndUnclaimedClosingReferences(t *testing.T
 		t.Fatal(err)
 	}
 	sctx.Env, _ = fakeGH(t, "")
-	body, _, err := estimatePRBody(sctx, scm.ProviderGitHub, nil)
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _, err := estimatePRBody(sctx, scm.ProviderGitHub, nil, steps)
 	if err != nil {
 		t.Fatal(err)
 	}

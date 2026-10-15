@@ -106,7 +106,7 @@ func checkEarlyPRBudget(sctx *pipeline.StepContext) error {
 		}
 		existingParts = &parts
 	}
-	body, sections, err := estimatePRBody(sctx, provider, existingParts)
+	body, sections, err := estimatePRBody(sctx, provider, existingParts, steps)
 	if err != nil {
 		if sctx.Log != nil {
 			sctx.Log(fmt.Sprintf("PR body budget estimate unavailable: %v", err))
@@ -140,27 +140,15 @@ type prBudgetSection struct{ name, text string }
 
 // Render the currently known public material without uploads, evidence-branch
 // pushes, or drafting. Future model prose and evidence are deliberately unknown.
-func estimatePRBody(sctx *pipeline.StepContext, provider scm.Provider, existingParts *prOwnedBody) (string, []prBudgetSection, error) {
-	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
-	if err != nil {
-		return "", nil, err
-	}
+func estimatePRBody(sctx *pipeline.StepContext, provider scm.Provider, existingParts *prOwnedBody, steps []*db.StepResult) (string, []prBudgetSection, error) {
 	rounds := make(map[string][]*db.StepRound, len(steps))
+	var err error
 	for _, step := range steps {
 		rounds[step.ID], err = sctx.DB.GetRoundsByStep(step.ID)
 		if err != nil {
 			return "", nil, err
 		}
 	}
-	policy := pipelineAttestationPolicy{}
-	if sctx.Config != nil {
-		policy.AllowTestCommandOverride = strings.TrimSpace(sctx.Config.Test.AllowApproveOverFailure)
-	}
-	pipelineMD, risk := buildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider, policy)
-	if conversation := buildReviewConversationSection(sctx); conversation != "" && pipelineMD != "" {
-		pipelineMD += "\n\n" + conversation
-	}
-	testing := buildPRTestingSummary(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, testEvidenceDir(sctx), nil, provider, nil)
 	// Intent extraction updates Run before the executor refreshes UserIntent.
 	view := *sctx
 	if sctx.Run.Intent != nil {
@@ -176,16 +164,14 @@ func estimatePRBody(sctx *pipeline.StepContext, provider scm.Provider, existingP
 		return "", nil, fmt.Errorf("run no longer exists")
 	}
 	view.ClosingIssueRefs = currentRun.ClosingIssueRefs
-	narrative := "## What Changed\n\n"
 	templateName := configuredPRTemplate(&view)
+	pipelineMD, risk, testing := pipelineSectionFrom(sctx, provider, existingParts != nil || templateName != "", steps, rounds, nil, nil)
+	narrative := "## What Changed\n\n"
 	if templateName != "" {
 		narrative, err = loadPRTemplate(sctx.Ctx, sctx.WorkDir, sctx.Config.TrustedConfigSHA, templateName)
 		if err != nil {
 			return "", nil, err
 		}
-	}
-	if (existingParts != nil || templateName != "") && provider == scm.ProviderBitbucket && pipelineMD != "" {
-		pipelineMD += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
 	}
 	var parts *prOwnedBody
 	if existingParts != nil {
