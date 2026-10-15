@@ -153,6 +153,32 @@ func validateOwnedPRBudget(body string, bodyLimit int) error {
 	return nil
 }
 
+func findExistingPRForPublication(sctx *pipeline.StepContext, host scm.Host, branch string) (*scm.PR, scm.PRContent, error) {
+	existing, err := host.FindPR(sctx.Ctx, branch, "")
+	if err != nil {
+		return nil, scm.PRContent{}, err
+	}
+	existing, err = bindExistingPR(sctx, host, existing)
+	if err != nil {
+		return nil, scm.PRContent{}, err
+	}
+	if existing == nil {
+		return nil, scm.PRContent{}, nil
+	}
+	var live scm.PRContent
+	if reader, ok := host.(scm.PRContentReader); ok {
+		live, err = reader.GetPRContent(sctx.Ctx, existing)
+		if err != nil {
+			return nil, scm.PRContent{}, fmt.Errorf("read existing PR before publication: %w", err)
+		}
+	}
+	return existing, live, nil
+}
+
+func prBodyIsOwned(template string, existing *scm.PR, liveBody string) bool {
+	return template != "" || (existing != nil && hasPRAppendixMarkers(liveBody))
+}
+
 // updateOwnedPR re-reads before the full-body write and verifies afterwards.
 // This is NOT compare-and-swap: providers expose full-body writes. Detected
 // pre-write edits are merged from their latest version (bounded); a write error

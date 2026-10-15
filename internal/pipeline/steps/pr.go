@@ -125,24 +125,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	bodyLimit := scm.HostMaxPRBodyChars(host)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existing, err := host.FindPR(ctx, branch, "")
-	if err != nil {
-		return nil, err
-	}
-	existing, err = bindExistingPR(sctx, host, existing)
+	existing, live, err := findExistingPRForPublication(sctx, host, branch)
 	if err != nil {
 		return nil, err
 	}
 	if existing != nil {
-		var live scm.PRContent
-		if reader, ok := host.(scm.PRContentReader); ok {
-			live, err = reader.GetPRContent(ctx, existing)
-			if err != nil {
-				return nil, fmt.Errorf("read existing PR before publication: %w", err)
-			}
-		} else if template != "" {
-			return nil, fmt.Errorf("provider cannot read existing PR content for author-safe template updates")
-		}
 		// Claim after the live read and before composition, so a reattach can
 		// add references until the body is actually being composed.
 		if err := claimClosingIssueRefs(sctx, host, provider); err != nil {
@@ -152,7 +139,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		updated := existing
 		// Removing pr.template must not switch an already owned body back to
 		// destructive drafting. Its live author narrative still wins.
-		if template != "" || hasPRAppendixMarkers(live.Body) {
+		if prBodyIsOwned(template, existing, live.Body) {
 			if _, err := parsePROwnedBody(live.Body); err != nil {
 				return nil, err
 			}
@@ -420,7 +407,7 @@ func describePR(pr *scm.PR) string {
 // next rendering path somebody adds is not going to have one; a boundary scrub
 // covers sources nobody has written yet.
 func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string, provider scm.Provider, bodyLimit int) (prContent, error) {
-	if name := configuredPRTemplate(sctx); name != "" {
+	if name := configuredPRTemplate(sctx); prBodyIsOwned(name, nil, "") {
 		if !supportsPRTemplates(provider) {
 			return prContent{}, fmt.Errorf("pr.template is unsupported by this provider")
 		}

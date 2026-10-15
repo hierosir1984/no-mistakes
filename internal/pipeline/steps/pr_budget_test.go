@@ -25,12 +25,26 @@ func productionBudgetStep(t *testing.T, name types.StepName) pipeline.Step {
 	return nil
 }
 
+func seedOwnedBudgetPR(t *testing.T, sctx *pipeline.StepContext, maxPRBodyChars int) string {
+	t.Helper()
+	content, _ := ownedFixture(t)
+	_, logPath := fakeProviderPlugin(t, sctx, fakeplugin.State{
+		MaxPRBodyChars: maxPRBodyChars,
+		PRs: []fakeplugin.PR{{
+			Number: "1", URL: "https://git.example.com/team/repo/pulls/1",
+			HeadBranch: "feature", BaseBranch: "main", Body: content.Body, State: "open",
+		}},
+	})
+	return logPath
+}
+
 func TestPRBudgetProductionStepsRefuseBeforeExpensiveWork(t *testing.T) {
 	for _, name := range []types.StepName{types.StepIntent, types.StepReview, types.StepTest} {
 		t.Run(string(name), func(t *testing.T) {
 			sctx := newIntentStepContext(t)
 			intent := strings.Repeat("large public intent ", 4000)
 			sctx.Run.Intent = &intent
+			seedOwnedBudgetPR(t, sctx, 100000)
 			_, err := productionBudgetStep(t, name).Execute(sctx)
 			if err == nil || !strings.Contains(err.Error(), "largest sections: Intent=") || !strings.Contains(err.Error(), "63488") || !strings.Contains(err.Error(), "linked file") {
 				t.Fatalf("did not refuse before needing an agent/git/test command: %v", err)
@@ -45,6 +59,7 @@ func TestPRBudgetRechecksRecordedEvidenceBeforeReviewAndTest(t *testing.T) {
 			sctx := newIntentStepContext(t)
 			intent := "A short intent"
 			sctx.Run.Intent = &intent
+			seedOwnedBudgetPR(t, sctx, 100000)
 			if _, err := productionBudgetStep(t, types.StepIntent).Execute(sctx); err != nil {
 				t.Fatal(err)
 			}
@@ -69,6 +84,7 @@ func TestPRBudgetUnderLimitStillRunsReviewAndTest(t *testing.T) {
 				return &agent.Result{Output: json.RawMessage(output)}, nil
 			}}
 			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+			sctx.Env, _ = fakeGH(t, "")
 			outcome, err := productionBudgetStep(t, name).Execute(sctx)
 			if err != nil || outcome == nil || outcome.NeedsApproval || len(ag.calls) == 0 {
 				t.Fatalf("under-budget step did not run normally: %+v %v, agent calls=%d", outcome, err, len(ag.calls))
@@ -79,6 +95,7 @@ func TestPRBudgetUnderLimitStillRunsReviewAndTest(t *testing.T) {
 
 func TestPRBudgetNearLimitOnlyWarnsAndOmittedIntentIsExcluded(t *testing.T) {
 	sctx := newIntentStepContext(t)
+	fakeProviderPlugin(t, sctx, fakeplugin.State{MaxPRBodyChars: 100000})
 	intent := strings.Repeat("public text ", 4700)
 	sctx.Run.Intent = &intent
 	var logs []string
@@ -100,11 +117,102 @@ func TestPRBudgetNearLimitOnlyWarnsAndOmittedIntentIsExcluded(t *testing.T) {
 	}
 }
 
+func TestPRBudgetOrdinaryDraftDoesNotRefuseOverLimit(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "new PR", true: "unowned existing PR"}[existing], func(t *testing.T) {
+			sctx := newIntentStepContext(t)
+			state := fakeplugin.State{MaxPRBodyChars: 100000}
+			if existing {
+				state.PRs = []fakeplugin.PR{{
+					Number: "1", URL: "https://git.example.com/team/repo/pulls/1",
+					HeadBranch: "feature", BaseBranch: "main", Body: "Author-owned narrative", State: "open",
+				}}
+			}
+			fakeProviderPlugin(t, sctx, state)
+			intent := strings.Repeat("public text ", 7000)
+			sctx.Run.Intent = &intent
+			var logs []string
+			sctx.Log = func(line string) { logs = append(logs, line) }
+			if _, err := productionBudgetStep(t, types.StepIntent).Execute(sctx); err != nil {
+				t.Fatalf("ordinary draft was refused: %v", err)
+			}
+			if !strings.Contains(strings.Join(logs, "\n"), "warning: near PR body budget") {
+				t.Fatalf("over-limit ordinary draft did not only warn: %v", logs)
+			}
+		})
+	}
+}
+
+func TestPRBudgetSkippedPRDoesNotEstimateOrRefuse(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	sctx.SkipPR = true
+	intent := strings.Repeat("large public intent ", 4000)
+	sctx.Run.Intent = &intent
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
+	if _, err := productionBudgetStep(t, types.StepIntent).Execute(sctx); err != nil {
+		t.Fatalf("explicit PR skip was refused: %v", err)
+	}
+	if strings.Contains(strings.Join(logs, "\n"), "PR body budget") {
+		t.Fatalf("explicit PR skip ran budget check: %v", logs)
+	}
+}
+
+func TestPRBudgetUnresolvableProviderDoesNotRefuse(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	intent := strings.Repeat("large public intent ", 4000)
+	sctx.Run.Intent = &intent
+	if _, err := productionBudgetStep(t, types.StepIntent).Execute(sctx); err != nil {
+		t.Fatalf("unresolvable PR provider was refused: %v", err)
+	}
+}
+
+func TestPRBudgetTemplateRefusesBeforeReview(t *testing.T) {
+	sctx, ag, _ := templateTestContext(t)
+	sctx.Env, _ = fakeGH(t, "")
+	intent := strings.Repeat("large public intent ", 4000)
+	sctx.Run.Intent = &intent
+	_, err := productionBudgetStep(t, types.StepReview).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "largest sections: Intent=") {
+		t.Fatalf("owned template body was not refused before review: %v", err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("preflight invoked review agent: %d calls", len(ag.calls))
+	}
+}
+
+func TestPRBudgetExistingOwnedAuthorTextCounts(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	content, appendix := ownedFixture(t)
+	parts, err := parsePROwnedBody(content.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := maxPullRequestBodyBytes - len(content.Body) + len(parts.before) - 128
+	parts.before = strings.Repeat("author text\n", padding/len("author text\n")) + "\n"
+	content = renderOwnedPRContent(parts, "", appendix)
+	state := fakeplugin.State{
+		MaxPRBodyChars: 100000,
+		PRs: []fakeplugin.PR{{
+			Number: "1", URL: "https://git.example.com/team/repo/pulls/1",
+			HeadBranch: "feature", BaseBranch: "main", Body: content.Body, State: "open",
+		}},
+	}
+	fakeProviderPlugin(t, sctx, state)
+	if len(content.Body) >= maxPullRequestBodyBytes {
+		t.Fatal("existing author body fixture exceeded its original budget")
+	}
+	_, err = productionBudgetStep(t, types.StepReview).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "PR body exceeds provider budget") {
+		t.Fatalf("existing author text was omitted from the estimate: %v", err)
+	}
+}
+
 func TestPRBudgetUsesForgeUnitsAndFinalGuardStillCatchesGrowth(t *testing.T) {
 	sctx := newIntentStepContext(t)
-	sctx.Repo.UpstreamURL = "https://dev.azure.com/org/project/_git/repo"
 	intent := strings.Repeat("😀", 2100)
 	sctx.Run.Intent = &intent
+	seedOwnedBudgetPR(t, sctx, 4000)
 	_, err := productionBudgetStep(t, types.StepIntent).Execute(sctx)
 	if err == nil || !strings.Contains(err.Error(), "/4000 UTF-16 units (forge limit)") {
 		t.Fatalf("ignored forge limit: %v", err)
@@ -132,7 +240,8 @@ func TestPRBudgetMinimalAppendixDoesNotCountExcludedEvidence(t *testing.T) {
 	sctx := newIntentStepContext(t)
 	insertCompletedStep(t, sctx, types.StepRebase, "", strings.Repeat("recorded evidence ", 5000))
 	sctx.Config.PR.Appendix = config.PRAppendixMinimal
-	body, _, err := estimatePRBody(sctx, scm.ProviderGitHub)
+	fakeProviderPlugin(t, sctx, fakeplugin.State{MaxPRBodyChars: 100000})
+	body, _, err := estimatePRBody(sctx, scm.ProviderGitHub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +258,8 @@ func TestPRBudgetCountsTrustedTemplateAndUnclaimedClosingReferences(t *testing.T
 	if err := sctx.DB.UpdateRunClosingIssueRefs(sctx.Run.ID, []string{"1471"}); err != nil {
 		t.Fatal(err)
 	}
-	body, _, err := estimatePRBody(sctx, scm.ProviderGitHub)
+	sctx.Env, _ = fakeGH(t, "")
+	body, _, err := estimatePRBody(sctx, scm.ProviderGitHub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,11 +282,17 @@ func TestPRBudgetUsesPluginDeclaredLimitWithoutPublishing(t *testing.T) {
 	_, logPath := fakeProviderPlugin(t, sctx, fakeplugin.State{MaxPRBodyChars: 4000})
 	intent := strings.Repeat("intent ", 700)
 	sctx.Run.Intent = &intent
+	var logs []string
+	sctx.Log = func(line string) { logs = append(logs, line) }
 	_, err := productionBudgetStep(t, types.StepIntent).Execute(sctx)
-	if err == nil || !strings.Contains(err.Error(), "/4000 UTF-16 units (forge limit)") {
-		t.Fatalf("ignored plugin limit: %v", err)
+	if err != nil {
+		t.Fatalf("ordinary plugin body was refused: %v", err)
 	}
-	if ops := pluginOperations(t, logPath); len(ops) != 1 || ops[0] != "status" {
-		t.Fatalf("preflight performed operations beyond the budget handshake: %v", ops)
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "warning: near PR body budget") || !strings.Contains(joined, "/4000 UTF-16 units (forge limit)") {
+		t.Fatalf("plugin limit was not used for the ordinary-path warning: %v", logs)
+	}
+	if ops := pluginOperations(t, logPath); len(ops) != 2 || ops[0] != "status" || ops[1] != "pr find" {
+		t.Fatalf("preflight performed operations beyond read-only discovery: %v", ops)
 	}
 }

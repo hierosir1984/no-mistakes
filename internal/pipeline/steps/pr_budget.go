@@ -48,32 +48,57 @@ func checkEarlyPRBudget(sctx *pipeline.StepContext) error {
 	if sctx == nil || sctx.Run == nil || sctx.Repo == nil || sctx.DB == nil || sctx.EvalReplay {
 		return nil
 	}
+	if sctx.SkipPR {
+		return nil
+	}
 	if strings.TrimPrefix(sctx.Run.Branch, "refs/heads/") == effectivePRBaseBranch(sctx) {
 		return nil
 	}
 	provider := resolvedProvider(sctx)
-	limit := scm.MaxPRBodyChars(provider)
-	// Only plugins need I/O to discover their budget. Built-in limits are local.
-	if provider.IsPlugin() {
-		host, reason := buildHost(sctx, provider)
-		if host == nil {
-			return fmt.Errorf("estimate PR body budget: %s", reason)
+	host, _ := buildHost(sctx, provider)
+	if host == nil {
+		return nil
+	}
+	if err := host.Available(sctx.Ctx); err != nil {
+		if sctx.Log != nil {
+			sctx.Log(fmt.Sprintf("PR body budget estimate unavailable: %v", err))
 		}
-		if err := host.Available(sctx.Ctx); err != nil {
-			if pluginContractBroken(err) {
-				return err
-			}
+		return nil
+	}
+	template := configuredPRTemplate(sctx)
+	if template != "" {
+		if _, ok := host.(scm.PRContentReader); !ok {
+			return nil
+		}
+	}
+	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
+	existing, live, err := findExistingPRForPublication(sctx, host, branch)
+	if err != nil {
+		if sctx.Log != nil {
+			sctx.Log(fmt.Sprintf("PR body budget estimate unavailable: %v", err))
+		}
+		return nil
+	}
+	owned := prBodyIsOwned(template, existing, live.Body)
+	var existingParts *prOwnedBody
+	if owned && existing != nil {
+		parts, err := parsePROwnedBody(live.Body)
+		if err != nil {
 			if sctx.Log != nil {
 				sctx.Log(fmt.Sprintf("PR body budget estimate unavailable: %v", err))
 			}
 			return nil
 		}
-		limit = scm.HostMaxPRBodyChars(host)
+		existingParts = &parts
 	}
-	body, sections, err := estimatePRBody(sctx, provider)
+	body, sections, err := estimatePRBody(sctx, provider, existingParts)
 	if err != nil {
-		return fmt.Errorf("estimate PR body budget: %w", err)
+		if sctx.Log != nil {
+			sctx.Log(fmt.Sprintf("PR body budget estimate unavailable: %v", err))
+		}
+		return nil
 	}
+	limit := scm.HostMaxPRBodyChars(host)
 	measure, budget, units := func(s string) int { return len(s) }, maxPullRequestBodyBytes, "bytes (publication safety limit)"
 	if limit > 0 && float64(scm.PRBodyLen(body))/float64(limit) > float64(len(body))/float64(maxPullRequestBodyBytes) {
 		measure, budget, units = scm.PRBodyLen, limit, "UTF-16 units (forge limit)"
@@ -85,8 +110,10 @@ func checkEarlyPRBudget(sctx *pipeline.StepContext) error {
 	}
 	detail := fmt.Sprintf("estimated PR body %d/%d %s; largest sections: %s", measure(body), budget, units, strings.Join(largest, ", "))
 	guidance := "Shorten the public intent or template narrative; move long evidence to a linked file. No author text, closing references or recorded evidence was dropped. Later drafting and evidence may increase this estimate."
-	if err := validateOwnedPRBudget(body, limit); err != nil {
-		return fmt.Errorf("%w: %s. %s", err, detail, guidance)
+	if owned {
+		if err := validateOwnedPRBudget(body, limit); err != nil {
+			return fmt.Errorf("%w: %s. %s", err, detail, guidance)
+		}
 	}
 	if float64(measure(body))/float64(budget) >= 0.8 && sctx.Log != nil {
 		sctx.Log("warning: near PR body budget: " + detail + ". " + guidance)
@@ -98,7 +125,7 @@ type prBudgetSection struct{ name, text string }
 
 // Render the currently known public material without uploads, evidence-branch
 // pushes, or drafting. Future model prose and evidence are deliberately unknown.
-func estimatePRBody(sctx *pipeline.StepContext, provider scm.Provider) (string, []prBudgetSection, error) {
+func estimatePRBody(sctx *pipeline.StepContext, provider scm.Provider, existingParts *prOwnedBody) (string, []prBudgetSection, error) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		return "", nil, err
@@ -159,12 +186,29 @@ func estimatePRBody(sctx *pipeline.StepContext, provider scm.Provider) (string, 
 			pipelineMD += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
 		}
 	}
+	var parts *prOwnedBody
+	if existingParts != nil {
+		copy := *existingParts
+		if copy.before == "" && !copy.managed && templateName != "" {
+			copy.before = narrative
+		}
+		parts = &copy
+		narrative = parts.before + parts.after
+	}
 	appendix := renderPRAppendix(&view, provider, pipelineMD, risk, testing)
-	issues := issuesSection(&view, narrative)
+	authorText := narrative
+	if parts != nil {
+		authorText = parts.before + "\n" + parts.after
+	}
+	issues := issuesSection(&view, authorText)
 	appendix = appendIssuesSection(appendix, issues)
-	body := redactPRContent(prContent{Body: narrative + "\n\n" + appendix}).Body
-	if templateName != "" {
+	var body string
+	if parts != nil {
+		body = renderOwnedPRContent(*parts, "", appendix).Body
+	} else if templateName != "" {
 		body = renderOwnedPRContent(prOwnedBody{before: narrative}, "", appendix).Body
+	} else {
+		body = redactPRContent(prContent{Body: narrative + "\n\n" + appendix}).Body
 	}
 	sections := []prBudgetSection{
 		{"Intent", publicPRIntent(&view)}, {"Template/narrative", narrative},
