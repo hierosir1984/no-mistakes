@@ -125,14 +125,7 @@ func wrapPRAppendix(appendix string) string {
 // generated block. Model-authored copies of ownership markers in evidence are
 // escaped before the actual delimiters are inserted, like foreign attestations.
 func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit int) (prContent, error) {
-	before := redactPRContent(prContent{Body: parts.before}).Body
-	after := redactPRContent(prContent{Body: parts.after}).Body
-	appendix = escapePRAppendixMarkers(appendix)
-	appendix = redactPRContent(prContent{Body: appendix}).Body
-	if !parts.managed && before != "" {
-		before += "\n\n"
-	}
-	content := prContent{Title: redactPRContent(prContent{Title: title}).Title, Body: before + wrapPRAppendix(appendix) + after}
+	content := renderOwnedPRContent(parts, title, appendix)
 	if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
 		return prContent{}, err
 	}
@@ -140,6 +133,17 @@ func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit 
 		return prContent{}, err
 	}
 	return content, nil
+}
+
+func renderOwnedPRContent(parts prOwnedBody, title, appendix string) prContent {
+	before := redactPRContent(prContent{Body: parts.before}).Body
+	after := redactPRContent(prContent{Body: parts.after}).Body
+	appendix = escapePRAppendixMarkers(appendix)
+	appendix = redactPRContent(prContent{Body: appendix}).Body
+	if !parts.managed && before != "" {
+		before += "\n\n"
+	}
+	return prContent{Title: redactPRContent(prContent{Title: title}).Title, Body: before + wrapPRAppendix(appendix) + after}
 }
 
 func validateOwnedPRBudget(body string, bodyLimit int) error {

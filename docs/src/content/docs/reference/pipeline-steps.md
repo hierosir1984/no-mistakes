@@ -62,7 +62,13 @@ This is best-effort context, and when available it is included in rebase fixes, 
 - Skips instead of failing when disabled, no matching transcript is found, the diff is empty, extraction errors, or persistence fails
 
 This step does not block the pipeline for missing transcripts, summarization that exceeds the five-minute extraction cap, or other extraction failures, which are reported as skipped outcomes.
-It can fail the run only if cleanup fails after the disambiguation agent leaves worktree side effects.
+Cleanup failures after the disambiguation agent leaves worktree side effects fail the run.
+
+After Intent, and again before Review and Test start, the pipeline estimates the public PR body without an agent turn or publication. The estimate uses the public intent, recorded pipeline/testing evidence, explicit closing references, the pinned trusted PR template when configured, and appendix/attestation overhead. It respects intent publication controls and the configured appendix mode. Built-in forge limits are local; provider plugins supply their limit through their status handshake.
+
+An estimate over the publication budget fails immediately, naming the largest sections, their sizes, and the binding limit (the 63,488-byte publication safety limit or the forge's tighter UTF-16 character limit). Move long evidence into a linked file or retained artifact, or shorten the public intent/template narrative before starting another run. At 80% of the budget the check only logs a warning. It never shortens author text, closing references, or recorded evidence.
+
+This is an estimate of material known at each checkpoint: later agent-written narrative, author edits on an existing PR, evidence, and upload links can still grow. The final PR-step refusal remains the backstop; the early check does not upload evidence or automatically move it into a file.
 
 ## Rebase
 
