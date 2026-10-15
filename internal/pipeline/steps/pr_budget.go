@@ -172,6 +172,9 @@ func estimatePRBody(sctx *pipeline.StepContext, provider scm.Provider, existingP
 		if err != nil {
 			return "", nil, err
 		}
+		// Only top-level H1 headings are structurally required in the drafted
+		// narrative; instructions, options, and placeholders can be removed.
+		narrative = strings.Join(templateStructureLines(narrative), "\n")
 	}
 	var parts *prOwnedBody
 	if existingParts != nil {

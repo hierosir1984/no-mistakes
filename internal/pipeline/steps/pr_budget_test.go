@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -293,6 +294,81 @@ func TestPRBudgetTemplateRefusesBeforeReview(t *testing.T) {
 	}
 }
 
+func TestPRBudgetLargeRemovableTemplateFitsBeforeIntent(t *testing.T) {
+	sctx, ag, _ := templateTestContext(t)
+	largeTemplate := "# Summary\n\n" +
+		"<!-- " + strings.Repeat("Describe the final change. ", 100) + "-->\n\n" +
+		"## Details\n\nPlease remove unused options and replace this placeholder.\n" +
+		strings.Repeat("- [ ] Unused option that can be removed\n", 100) +
+		"\n# Validation\n\n" + strings.Repeat("Validation placeholder. ", 50)
+	if len(largeTemplate) <= 4000 {
+		t.Fatalf("fixture template is not larger than the forge limit: %d", len(largeTemplate))
+	}
+	name := sctx.Config.PR.Template
+	if err := os.WriteFile(filepath.Join(sctx.WorkDir, filepath.FromSlash(name)), []byte(largeTemplate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, sctx.WorkDir, "add", name)
+	gitCmd(t, sctx.WorkDir, "commit", "-m", "large trusted template")
+	sctx.Config.TrustedConfigSHA = gitCmd(t, sctx.WorkDir, "rev-parse", "HEAD")
+	ag.runFn = func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		body := "# Summary\nA concise account of the change.\n# Validation\nValidation passed."
+		data, _ := json.Marshal(prContent{Title: "fix: concise change", Body: body})
+		return &agent.Result{Output: data}, nil
+	}
+	fakeProviderPlugin(t, sctx, fakeplugin.State{MaxPRBodyChars: 4000})
+
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	estimate, sections, err := estimatePRBody(sctx, scm.PluginProvider("ssm"), nil, steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var narrative string
+	for _, section := range sections {
+		if section.name == "Template/narrative" {
+			narrative = section.text
+		}
+	}
+	if narrative != "# Summary\n# Validation" {
+		t.Fatalf("estimated narrative = %q, want required heading skeleton", narrative)
+	}
+	if err := validateTemplateStructure(largeTemplate, narrative); err != nil {
+		t.Fatalf("estimated narrative did not retain required structure: %v", err)
+	}
+	if strings.Contains(estimate, "Unused option") || scm.PRBodyLen(estimate) >= 4000 {
+		t.Fatalf("minimum template estimate did not fit: body length %d", scm.PRBodyLen(estimate))
+	}
+
+	// Exercise the production Intent wrapper: it runs the same early estimate
+	// before allowing the pipeline to continue.
+	sctx.Config.Intent.Enabled = false
+	if _, err := productionBudgetStep(t, types.StepIntent).Execute(sctx); err != nil {
+		t.Fatalf("publishable template was refused by the early step: %v", err)
+	}
+
+	draft, err := (&PRStep{}).draftTemplateNarrative(sctx, "feature", "main", sctx.Run.BaseSHA, largeTemplate)
+	if err != nil {
+		t.Fatalf("short template draft failed validation: %v", err)
+	}
+	if err := validateTemplateStructure(largeTemplate, draft.Body); err != nil {
+		t.Fatalf("draft omitted required headings: %v", err)
+	}
+	parts, err := parsePROwnedBody(estimate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := composeOwnedPRContent(prOwnedBody{before: draft.Body}, draft.Title, parts.appendix, 4000)
+	if err != nil {
+		t.Fatalf("short template narrative did not fit publication budget: %v", err)
+	}
+	if scm.PRBodyLen(published.Body) > 4000 {
+		t.Fatalf("composed body exceeds forge limit: %d", scm.PRBodyLen(published.Body))
+	}
+}
+
 func TestPRBudgetExistingOwnedAuthorTextCounts(t *testing.T) {
 	sctx := newIntentStepContext(t)
 	for _, name := range types.AllSteps() {
@@ -388,7 +464,7 @@ func TestPRBudgetCountsTrustedTemplateAndUnclaimedClosingReferences(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(body, testPRTemplate) || strings.Contains(body, "CONTRIBUTOR TEMPLATE MUST NOT WIN") || !strings.Contains(body, "Closes #1471") || !hasPRAppendixMarkers(body) {
+	if !strings.HasPrefix(body, "# Overview\n\n") || strings.Contains(body, "Describe the final change") || strings.Contains(body, "CONTRIBUTOR TEMPLATE MUST NOT WIN") || !strings.Contains(body, "Closes #1471") || !hasPRAppendixMarkers(body) {
 		t.Fatalf("estimate lost trusted template, appendix or closing references: %s", body)
 	}
 	if err := checkEarlyPRBudget(sctx); err != nil {

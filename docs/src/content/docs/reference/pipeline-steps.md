@@ -64,7 +64,7 @@ This is best-effort context, and when available it is included in rebase fixes, 
 This step does not block the pipeline for missing transcripts, summarization that exceeds the five-minute extraction cap, or other extraction failures, which are reported as skipped outcomes.
 Cleanup failures after the disambiguation agent leaves worktree side effects fail the run.
 
-After Intent, and again before Review and Test start, the pipeline estimates the public PR body without an agent turn or publication. The estimate uses the public intent, recorded pipeline/testing evidence, explicit closing references, the pinned trusted PR template when configured, and appendix/attestation overhead. It respects intent publication controls and the configured appendix mode. Built-in forge limits are local; provider plugins supply their limit through their status handshake.
+After Intent, and again before Review and Test start, the pipeline estimates the public PR body without an agent turn or publication. The estimate uses the public intent, recorded pipeline/testing evidence, explicit closing references, the pinned trusted PR template's required top-level H1 headings when configured, and appendix/attestation overhead. Template instructions, options, placeholders, and lower-level headings are removable during drafting, so the estimate does not count them. It respects intent publication controls and the configured appendix mode. Built-in forge limits are local; provider plugins supply their limit through their status handshake.
 
 A provider-plugin protocol violation or timeout during an early estimate fails the current step, as it does at PR publication; ordinary provider unavailability only skips the estimate.
 
