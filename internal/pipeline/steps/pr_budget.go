@@ -69,6 +69,9 @@ func checkEarlyPRBudget(sctx *pipeline.StepContext) error {
 		return nil
 	}
 	if err := host.Available(sctx.Ctx); err != nil {
+		if pluginContractBroken(err) {
+			return err
+		}
 		if sctx.Log != nil {
 			sctx.Log(fmt.Sprintf("PR body budget estimate unavailable: %v", err))
 		}
@@ -83,6 +86,9 @@ func checkEarlyPRBudget(sctx *pipeline.StepContext) error {
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
 	existing, live, err := findExistingPRForPublication(sctx, host, branch)
 	if err != nil {
+		if pluginContractBroken(err) {
+			return err
+		}
 		if sctx.Log != nil {
 			sctx.Log(fmt.Sprintf("PR body budget estimate unavailable: %v", err))
 		}
@@ -144,20 +150,6 @@ func estimatePRBody(sctx *pipeline.StepContext, provider scm.Provider, existingP
 		rounds[step.ID], err = sctx.DB.GetRoundsByStep(step.ID)
 		if err != nil {
 			return "", nil, err
-		}
-	}
-	// Reserve the core section/attestation skeleton even before those steps
-	// exist in the DB. These are estimates only and are never persisted.
-	for _, name := range types.AllSteps() {
-		found := false
-		for _, step := range steps {
-			if step.StepName == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			steps = append(steps, &db.StepResult{StepName: name, Status: types.StepStatusPending})
 		}
 	}
 	policy := pipelineAttestationPolicy{}

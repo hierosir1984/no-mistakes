@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -175,6 +176,9 @@ func TestPRBudgetRecordedSkippedPRDoesNotEstimateOrRefuse(t *testing.T) {
 
 func TestPRBudgetExistingOwnedBitbucketBodyIncludesAttestation(t *testing.T) {
 	sctx := newIntentStepContext(t)
+	if _, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview); err != nil {
+		t.Fatal(err)
+	}
 	content, _ := ownedFixture(t)
 	parts, err := parsePROwnedBody(content.Body)
 	if err != nil {
@@ -197,6 +201,69 @@ func TestPRBudgetExistingOwnedBitbucketBodyIncludesAttestation(t *testing.T) {
 		}
 	}
 	t.Fatal("pipeline section missing from PR body estimate")
+}
+
+func TestPRBudgetPluginStatusProtocolViolationFailsClosed(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	_, logPath := fakeProviderPlugin(t, sctx, fakeplugin.State{ProtocolVersion: 99})
+	_, err := productionBudgetStep(t, types.StepReview).Execute(sctx)
+	if err == nil || !pluginContractBroken(err) {
+		t.Fatalf("invalid plugin status handshake did not fail the early check: %v", err)
+	}
+	if ops := pluginOperations(t, logPath); len(ops) != 1 || ops[0] != "status" {
+		t.Fatalf("provider calls after invalid status handshake: %v", ops)
+	}
+}
+
+func TestPRBudgetPluginPRReadProtocolViolationFailsClosed(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	_, logPath := fakeProviderPlugin(t, sctx, fakeplugin.State{
+		MaxPRBodyChars: 100000,
+		PRs: []fakeplugin.PR{{
+			Number: "1", URL: "https://git.example.com/other/repo/pulls/1",
+			HeadBranch: "feature", BaseBranch: "main", State: "open",
+		}},
+	})
+	_, err := productionBudgetStep(t, types.StepReview).Execute(sctx)
+	if err == nil || !pluginContractBroken(err) {
+		t.Fatalf("invalid plugin PR lookup did not fail the early check: %v", err)
+	}
+	if ops := pluginOperations(t, logPath); len(ops) != 2 || ops[0] != "status" || ops[1] != "pr find" {
+		t.Fatalf("provider calls after invalid PR lookup: %v", ops)
+	}
+}
+
+func TestPRBudgetPluginContentReadTimeoutFailsClosed(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	_, logPath := fakeProviderPlugin(t, sctx, fakeplugin.State{
+		MaxPRBodyChars: 100000,
+		HangOn:         "pr view",
+		PRs: []fakeplugin.PR{{
+			Number: "1", URL: "https://git.example.com/team/repo/pulls/1",
+			HeadBranch: "feature", BaseBranch: "main", State: "open",
+		}},
+	})
+	pluginConfig := sctx.Config.ProviderPlugins["ssm"]
+	pluginConfig.Timeout = time.Second
+	sctx.Config.ProviderPlugins["ssm"] = pluginConfig
+	_, err := productionBudgetStep(t, types.StepReview).Execute(sctx)
+	if err == nil || !pluginContractBroken(err) {
+		t.Fatalf("one-shot plugin PR content timeout did not fail the early check: %v", err)
+	}
+	if ops := pluginOperations(t, logPath); len(ops) != 3 || ops[0] != "status" || ops[1] != "pr find" || ops[2] != "pr view" {
+		t.Fatalf("provider calls after PR content timeout: %v", ops)
+	}
+}
+
+func TestPRBudgetOrdinaryPluginUnavailabilitySkipsEstimate(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	_, logPath := fakeProviderPlugin(t, sctx, fakeplugin.State{Unauthenticated: true})
+	if err := checkEarlyPRBudget(sctx); err != nil {
+		t.Fatalf("ordinary plugin unavailability failed the estimate: %v", err)
+	}
+	if ops := pluginOperations(t, logPath); len(ops) != 1 || ops[0] != "status" {
+		t.Fatalf("provider calls after unavailable status: %v", ops)
+	}
 }
 
 func TestPRBudgetUnresolvableProviderDoesNotRefuse(t *testing.T) {
@@ -224,6 +291,11 @@ func TestPRBudgetTemplateRefusesBeforeReview(t *testing.T) {
 
 func TestPRBudgetExistingOwnedAuthorTextCounts(t *testing.T) {
 	sctx := newIntentStepContext(t)
+	for _, name := range types.AllSteps() {
+		if _, err := sctx.DB.InsertStepResult(sctx.Run.ID, name); err != nil {
+			t.Fatal(err)
+		}
+	}
 	content, appendix := ownedFixture(t)
 	parts, err := parsePROwnedBody(content.Body)
 	if err != nil {
