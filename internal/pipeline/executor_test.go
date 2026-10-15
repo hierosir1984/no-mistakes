@@ -36,23 +36,6 @@ func TestExecutorAutomaticSkipReasonRedactsCredentials(t *testing.T) {
 	}
 }
 
-func TestExecutorPassesExplicitPRSkipToStepContext(t *testing.T) {
-	database, p, run, repo := setupTest(t)
-	var skippedPR bool
-	intent := &adaptiveCallStep{name: types.StepIntent, fn: func(sctx *StepContext) (*StepOutcome, error) {
-		skippedPR = sctx.SkipPR
-		return &StepOutcome{}, nil
-	}}
-	exec := NewExecutor(database, p, nil, nil, []Step{intent, newPassStep(types.StepPR)}, nil)
-	exec.SetSkippedSteps([]types.StepName{types.StepPR})
-	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	if !skippedPR {
-		t.Fatal("step context did not receive the explicit PR skip")
-	}
-}
-
 // TestExecutor_StepLifecycleEvents verifies the executor emits step_started
 // and step_completed IPC events for every step in order. The broader
 // happy-path orchestration (DB persistence, run/step status transitions,

@@ -1238,7 +1238,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		CIReadinessChanged: ciReadinessChanged,
 		MarkRunning:        markRunning,
 		OnPRMerged:         e.onPRMerged,
-		SkipPR:             e.skips[types.StepPR],
 	}
 	if stepName == types.StepReview {
 		BindUncertifiedPipelineRange(sctx)

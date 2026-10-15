@@ -46,7 +46,6 @@ type StepContext struct {
 	// agent invocation the captured baseline does not charge, doubling the
 	// candidate's recorded cost. Production never sets it.
 	EvalReplay bool
-	SkipPR     bool
 	// FinalizingAnswers is true when re-executing after a types.ActionAnswer
 	// response: every question the reviewer left open has been answered, and
 	// the step resumes the SAME reviewer session with those answers so it can

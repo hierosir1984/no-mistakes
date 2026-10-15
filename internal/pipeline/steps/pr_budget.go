@@ -48,11 +48,20 @@ func checkEarlyPRBudget(sctx *pipeline.StepContext) error {
 	if sctx == nil || sctx.Run == nil || sctx.Repo == nil || sctx.DB == nil || sctx.EvalReplay {
 		return nil
 	}
-	if sctx.SkipPR {
-		return nil
-	}
 	if strings.TrimPrefix(sctx.Run.Branch, "refs/heads/") == effectivePRBaseBranch(sctx) {
 		return nil
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		if sctx.Log != nil {
+			sctx.Log(fmt.Sprintf("PR body budget estimate unavailable: %v", err))
+		}
+		return nil
+	}
+	for _, step := range steps {
+		if step.StepName == types.StepPR && step.Status == types.StepStatusSkipped {
+			return nil
+		}
 	}
 	provider := resolvedProvider(sctx)
 	host, _ := buildHost(sctx, provider)
@@ -182,9 +191,9 @@ func estimatePRBody(sctx *pipeline.StepContext, provider scm.Provider, existingP
 		if err != nil {
 			return "", nil, err
 		}
-		if provider == scm.ProviderBitbucket && pipelineMD != "" {
-			pipelineMD += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
-		}
+	}
+	if (existingParts != nil || templateName != "") && provider == scm.ProviderBitbucket && pipelineMD != "" {
+		pipelineMD += "\n\n```text\n" + buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, policy) + "\n```"
 	}
 	var parts *prOwnedBody
 	if existingParts != nil {

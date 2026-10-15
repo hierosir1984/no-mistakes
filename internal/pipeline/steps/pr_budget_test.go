@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -143,11 +144,18 @@ func TestPRBudgetOrdinaryDraftDoesNotRefuseOverLimit(t *testing.T) {
 	}
 }
 
-func TestPRBudgetSkippedPRDoesNotEstimateOrRefuse(t *testing.T) {
+func TestPRBudgetRecordedSkippedPRDoesNotEstimateOrRefuse(t *testing.T) {
 	sctx := newIntentStepContext(t)
-	sctx.SkipPR = true
+	prStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepPR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.CompleteStepWithStatus(prStep.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
 	intent := strings.Repeat("large public intent ", 4000)
 	sctx.Run.Intent = &intent
+	logPath := seedOwnedBudgetPR(t, sctx, 100000)
 	var logs []string
 	sctx.Log = func(line string) { logs = append(logs, line) }
 	if _, err := productionBudgetStep(t, types.StepIntent).Execute(sctx); err != nil {
@@ -156,6 +164,39 @@ func TestPRBudgetSkippedPRDoesNotEstimateOrRefuse(t *testing.T) {
 	if strings.Contains(strings.Join(logs, "\n"), "PR body budget") {
 		t.Fatalf("explicit PR skip ran budget check: %v", logs)
 	}
+	if _, err := os.Stat(logPath); err == nil {
+		if ops := pluginOperations(t, logPath); len(ops) != 0 {
+			t.Fatalf("explicit PR skip queried the provider: %v", ops)
+		}
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+func TestPRBudgetExistingOwnedBitbucketBodyIncludesAttestation(t *testing.T) {
+	sctx := newIntentStepContext(t)
+	content, _ := ownedFixture(t)
+	parts, err := parsePROwnedBody(content.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, sections, err := estimatePRBody(sctx, scm.ProviderBitbucket, &parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := "```text\n" + pipelineAttestationCommentPrefix
+	if !strings.Contains(body, fence) {
+		t.Fatal("owned Bitbucket body estimate omitted visible attestation")
+	}
+	for _, section := range sections {
+		if section.name == "Pipeline" {
+			if !strings.Contains(section.text, fence) {
+				t.Fatal("owned Bitbucket pipeline estimate omitted visible attestation")
+			}
+			return
+		}
+	}
+	t.Fatal("pipeline section missing from PR body estimate")
 }
 
 func TestPRBudgetUnresolvableProviderDoesNotRefuse(t *testing.T) {
