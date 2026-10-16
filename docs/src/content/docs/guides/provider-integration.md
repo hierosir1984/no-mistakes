@@ -72,6 +72,7 @@ gh auth status
 
 `no-mistakes doctor` also checks for `gh` availability.
 For PR and workflow-run commands, no-mistakes passes the repository slug from the recorded upstream remote or PR URL to `gh`, so daemon-run commands do not depend on the daemon's current working directory.
+Rewriting an existing PR's title or body (the attestation rebind before a push, the PR step's update) uses a REST `PATCH` through `gh api` rather than `gh pr edit`, so a token limited to the `repo` and `workflow` scopes is enough. `gh pr edit` looks the PR up over GraphQL with team fields that need `read:org`.
 
 ### Multiple GitHub or GitLab identities
 

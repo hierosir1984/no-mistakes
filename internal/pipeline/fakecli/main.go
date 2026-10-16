@@ -13,10 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/fakecli/ghsanitize"
 	"github.com/kunchenguid/no-mistakes/internal/scm/plugin/fakeplugin"
 )
 
@@ -113,11 +115,11 @@ func handleFakeCLI(mode string) {
 }
 
 func logFakeCLIStdinBody(args []string, logFile string) {
-	if logFile == "" || !argsUseStdinBodyFile(args) {
+	if logFile == "" {
 		return
 	}
-	body, err := readFakeBody()
-	if err != nil {
+	body, err := fakeGHStdinBody(args)
+	if err != nil || body == nil {
 		return
 	}
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -125,8 +127,64 @@ func logFakeCLIStdinBody(args []string, logFile string) {
 		return
 	}
 	defer f.Close()
+	if isFakeGHPRPatch(args) {
+		// A PATCH carries the title only when the caller replaces it.
+		if title, _ := fakeGHPRPatchField(args, "title"); title != "" {
+			fmt.Fprintln(f, "stdin --title "+title)
+		}
+	}
 	fmt.Fprint(f, "stdin --body ")
 	fmt.Fprintln(f, string(body))
+}
+
+// fakeGHPRPatchField returns one string member of the JSON document streamed
+// to a `gh api --method PATCH repos/<slug>/pulls/<n> --input -` update.
+func fakeGHPRPatchField(args []string, field string) (string, error) {
+	raw, err := readFakeBody()
+	if err != nil {
+		return "", err
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", err
+	}
+	return payload[field], nil
+}
+
+// fakeGHStdinBody returns the PR body a gh invocation streams on stdin: the raw
+// stdin for `--body-file -`, the "body" member of the JSON document for a REST
+// PR content update (what the GitHub provider uses so a repo+workflow token
+// never triggers gh's read:org-gated GraphQL lookup). It returns nil for any
+// other invocation.
+func fakeGHStdinBody(args []string) ([]byte, error) {
+	switch {
+	case argsUseStdinBodyFile(args):
+		return readFakeBody()
+	case isFakeGHPRPatch(args):
+		body, err := fakeGHPRPatchField(args, "body")
+		return []byte(body), err
+	}
+	return nil, nil
+}
+
+var fakeGHPullEndpoint = regexp.MustCompile(`^repos/[^/]+/[^/]+/pulls/[0-9]+$`)
+
+// isFakeGHPRPatch reports whether args is a REST PR content update.
+func isFakeGHPRPatch(args []string) bool {
+	if len(args) == 0 || args[0] != "api" {
+		return false
+	}
+	method, _ := fakeCLIFlagValue(args, "--method")
+	input, _ := fakeCLIFlagValue(args, "--input")
+	if method != "PATCH" || input != "-" {
+		return false
+	}
+	for _, arg := range args {
+		if fakeGHPullEndpoint.MatchString(arg) {
+			return true
+		}
+	}
+	return false
 }
 
 func argsUseStdinBodyFile(args []string) bool {
@@ -193,7 +251,7 @@ func fakeGHHandler(args []string) {
 		}
 		os.Exit(1)
 	}
-	if len(args) >= 2 && args[0] == "pr" && args[1] == "edit" {
+	if (len(args) >= 2 && args[0] == "pr" && args[1] == "edit") || isFakeGHPRPatch(args) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
@@ -593,10 +651,14 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		if os.Getenv("FAKE_CLI_GH_SANITIZE") != "" {
+			// The real gh rewrites control characters in every API response.
+			payload = ghsanitize.JSON(payload)
+		}
 		fmt.Println(string(payload))
 		os.Exit(0)
 	}
-	if strings.Contains(joined, "pr edit") {
+	if strings.Contains(joined, "pr edit") || isFakeGHPRPatch(args) {
 		if editErr := os.Getenv("FAKE_CLI_PR_EDIT_ERR"); editErr != "" {
 			fmt.Fprintln(os.Stderr, editErr)
 			os.Exit(1)
@@ -608,11 +670,10 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 
 func fakeGHStorePRBody(args []string) {
 	path := os.Getenv("FAKE_CLI_PR_BODY_FILE")
-	bodyFile, _ := fakeCLIFlagValue(args, "--body-file")
-	if path == "" || bodyFile != "-" {
+	body, err := fakeGHStdinBody(args)
+	if path == "" || (err == nil && body == nil) {
 		return // A base-only edit must not erase the fake's body either.
 	}
-	body, err := readFakeBody()
 	if err == nil {
 		err = os.WriteFile(path, body, 0o644)
 	}
